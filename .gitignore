@@ -23,7 +23,5 @@ coverage.xml
 !.env.example
 !.env.sample
 
-config/*
-!config/default.*
-configs/*
-!configs/default.*
+data/*
+!data/default.*
