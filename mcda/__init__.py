@@ -1,10 +1,10 @@
 from mcda.core import MCDAMethod, MethodResult
 from mcda.methods.ahp import AHPMethod
-from mcda.methods.choix import ChoixMethod
+from mcda.methods.promethee_ii import PrometheeIIMethod
 
 METHODS = {
     "ahp": AHPMethod(),
-    "choix": ChoixMethod(),
+    "promethee_ii": PrometheeIIMethod(),
 }
 
 

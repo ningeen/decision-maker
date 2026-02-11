@@ -1,6 +1,6 @@
 # Decision Helper
 
-A small web app for multi-criteria decision analysis (MCDA). The current implementation supports AHP and a Choix (Bradley-Terry) weighting alternative, with a weighted-sum model for option scoring and an architecture that makes it easy to add more MCDA methods later.
+A small web app for multi-criteria decision analysis (MCDA). The current implementation supports AHP and PROMETHEE II (via pyDecision) with a weighted-sum model for AHP scoring and an outranking flow for PROMETHEE II, with an architecture that makes it easy to add more MCDA methods later.
 
 ## Quick start
 

@@ -1,4 +1,3 @@
 nicegui>=1.4.20
 pyDecision>=4.5.2
 numpy>=1.26.0
-choix>=0.4.1

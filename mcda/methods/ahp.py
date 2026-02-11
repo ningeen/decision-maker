@@ -11,7 +11,12 @@ class AHPMethod(MCDAMethod):
     id = "ahp"
     name = "Analytic Hierarchy Process"
 
-    def compute_weights(self, criteria: List[str], pairwise: List[List[float]]) -> MethodResult:
+    def compute_weights(
+        self,
+        criteria: List[str],
+        pairwise: List[List[float]],
+        context=None,
+    ) -> MethodResult:
         if len(criteria) < 2:
             return MethodResult(weights=[1.0] * len(criteria), consistency_ratio=None)
 
@@ -28,6 +33,7 @@ class AHPMethod(MCDAMethod):
         self,
         weights: List[float],
         option_scores: Dict[str, List[float]],
+        context=None,
     ) -> List[Tuple[str, float]]:
         if not option_scores:
             return []

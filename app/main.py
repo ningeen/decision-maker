@@ -19,6 +19,7 @@ from nicegui import ui
 import nicegui.run as ng_run
 
 from mcda import get_method, list_methods
+from mcda.core import MethodContext
 from models import Project, Result
 from storage import list_projects, load_project, save_project
 
@@ -32,15 +33,6 @@ state = AppState(project=Project(name="default"))
 method_heading: Optional[ui.label] = None
 method_hint_primary: Optional[ui.label] = None
 method_hint_secondary: Optional[ui.label] = None
-
-
-def resolve_method_id(selection: str, options: dict) -> str:
-    if selection in options:
-        return selection
-    for method_id, label in options.items():
-        if label == selection:
-            return method_id
-    return "ahp"
 
 
 def resize_square_matrix(matrix: List[List[float]], size: int, default: float = 1.0) -> List[List[float]]:
@@ -73,6 +65,13 @@ def resize_scores(scores: List[List[float]], options: int, criteria: int) -> Lis
     return new_scores
 
 
+def resize_list(values: List, size: int, default) -> List:
+    resized = list(values[:size])
+    while len(resized) < size:
+        resized.append(default)
+    return resized
+
+
 UI_SCALE_TO_SAATY = {
     1: 2.0,
     2: 3.0,
@@ -83,6 +82,19 @@ UI_SCALE_TO_SAATY = {
 
 SAATY_VALUES = list(UI_SCALE_TO_SAATY.values())
 CONSISTENCY_THRESHOLD = 0.1
+PROMETHEE_FUNCTIONS = {
+    "t1": "t1 Usual (no thresholds)",
+    "t2": "t2 U-shape (Q)",
+    "t3": "t3 V-shape (P)",
+    "t4": "t4 Level (Q, P)",
+    "t5": "t5 Linear (Q, P)",
+    "t6": "t6 Gaussian (S)",
+    "t7": "t7 Quasi (S)",
+}
+PROMETHEE_DIRECTIONS = {
+    "max": "Maximize (benefit)",
+    "min": "Minimize (cost)",
+}
 
 
 def ahp_ratio_from_ui(value: float) -> float:
@@ -110,12 +122,34 @@ def ui_value_from_ratio(ratio: float) -> int:
     return sign * ui_value
 
 
+def max_pairwise_discrepancy(criteria: List[str], pairwise: List[List[float]], weights: List[float]):
+    if not criteria or len(criteria) != len(weights):
+        return None
+    best = None
+    for i in range(len(criteria)):
+        for j in range(i + 1, len(criteria)):
+            actual = pairwise[i][j]
+            if actual <= 0 or weights[j] == 0:
+                continue
+            expected = weights[i] / weights[j]
+            discrepancy = abs(math.log(actual / expected))
+            if best is None or discrepancy > best[0]:
+                best = (discrepancy, i, j, actual, expected)
+    return best
+
+
 def ensure_state_consistency() -> None:
     project = state.project
     project.pairwise = resize_square_matrix(project.pairwise, len(project.criteria), default=1.0)
     project.weights = project.weights[: len(project.criteria)]
     if len(project.weights) != len(project.criteria):
         project.weights = [1.0 / len(project.criteria)] * len(project.criteria) if project.criteria else []
+    project.promethee_weights = resize_list(project.promethee_weights, len(project.criteria), 1.0)
+    project.promethee_functions = resize_list(project.promethee_functions, len(project.criteria), "t1")
+    project.promethee_q = resize_list(project.promethee_q, len(project.criteria), 0.0)
+    project.promethee_p = resize_list(project.promethee_p, len(project.criteria), 0.0)
+    project.promethee_s = resize_list(project.promethee_s, len(project.criteria), 0.0)
+    project.promethee_directions = resize_list(project.promethee_directions, len(project.criteria), "max")
     project.scores = resize_scores(project.scores, len(project.options), len(project.criteria))
 
 
@@ -131,6 +165,7 @@ def add_criterion(name: str) -> None:
     ensure_state_consistency()
     criteria_view.refresh()
     pairwise_view.refresh()
+    promethee_view.refresh()
     weights_view.refresh()
     options_view.refresh()
     results_view.refresh()
@@ -141,6 +176,7 @@ def remove_criterion(index: int) -> None:
     ensure_state_consistency()
     criteria_view.refresh()
     pairwise_view.refresh()
+    promethee_view.refresh()
     weights_view.refresh()
     options_view.refresh()
     results_view.refresh()
@@ -161,12 +197,16 @@ def update_pairwise(i: int, j: int, value: float | None) -> None:
 
 def compute_weights() -> None:
     project = state.project
-    if len(project.criteria) < 2:
-        ui.notify("Add at least two criteria to compute weights.")
+    if not project.criteria:
+        ui.notify("Add at least one criterion to compute weights.")
+        return
+    if project.method_id == "ahp" and len(project.criteria) < 2:
+        ui.notify("Add at least two criteria to compute AHP weights.")
         return
     method = get_method(project.method_id)
     try:
-        result = method.compute_weights(project.criteria, project.pairwise)
+        context = build_context()
+        result = method.compute_weights(project.criteria, project.pairwise, context=context)
     except ModuleNotFoundError as exc:
         ui.notify(f"Missing dependency: {exc.name}. Install it and retry.")
         return
@@ -179,13 +219,13 @@ def compute_weights() -> None:
 def update_method_hints() -> None:
     if method_heading is None or method_hint_primary is None or method_hint_secondary is None:
         return
-    if state.project.method_id == "choix":
-        method_heading.set_text("Pairwise preferences (upper triangle)")
+    if state.project.method_id == "promethee_ii":
+        method_heading.set_text("PROMETHEE II parameters")
         method_hint_primary.set_text(
-            "Use -5 to 5 scale (0 = equal preference). Positive means row is preferred; negative means less preferred."
+            "Provide weights, preference functions, and thresholds for each criterion."
         )
         method_hint_secondary.set_text(
-            "Choix converts this to pairwise wins for a Bradley-Terry model; lower triangle is filled automatically."
+            "Scores are used directly; choose Minimize for cost criteria."
         )
     else:
         method_heading.set_text("Pairwise comparison (upper triangle)")
@@ -195,6 +235,19 @@ def update_method_hints() -> None:
         method_hint_secondary.set_text(
             "Internally this maps to the AHP 1/9-9 scale; lower triangle is filled automatically."
         )
+
+
+def build_context() -> MethodContext:
+    project = state.project
+    return MethodContext(
+        criteria=list(project.criteria),
+        directions=list(project.promethee_directions),
+        preference_functions=list(project.promethee_functions),
+        q=list(project.promethee_q),
+        p=list(project.promethee_p),
+        s=list(project.promethee_s),
+        weights_raw=list(project.promethee_weights),
+    )
 
 
 def add_option(name: str) -> None:
@@ -229,20 +282,65 @@ def update_score(option_index: int, criterion_index: int, value: float | None) -
     results_view.refresh()
 
 
+def update_promethee_weight(index: int, value: float | None) -> None:
+    if value is None:
+        return
+    if value < 0:
+        ui.notify("Weight must be 0 or greater.")
+        return
+    state.project.promethee_weights[index] = float(value)
+    weights_view.refresh()
+
+
+def update_promethee_function(index: int, value: str | None) -> None:
+    if not value:
+        return
+    state.project.promethee_functions[index] = value
+
+
+def update_promethee_threshold(kind: str, index: int, value: float | None) -> None:
+    if value is None:
+        return
+    if value < 0:
+        ui.notify("Threshold must be 0 or greater.")
+        return
+    if kind == "q":
+        state.project.promethee_q[index] = float(value)
+    elif kind == "p":
+        state.project.promethee_p[index] = float(value)
+    elif kind == "s":
+        state.project.promethee_s[index] = float(value)
+
+
+def update_promethee_direction(index: int, value: str | None) -> None:
+    if not value:
+        return
+    state.project.promethee_directions[index] = value
+
+
 def recompute_results() -> None:
     project = state.project
-    if not project.weights or len(project.weights) != len(project.criteria):
-        ui.notify("Compute weights before scoring options.")
-        return
+    method = get_method(project.method_id)
+    context = build_context()
+    if project.method_id == "promethee_ii":
+        project.weights = method.compute_weights(project.criteria, project.pairwise, context=context).weights
+        weights_view.refresh()
+    else:
+        if not project.weights or len(project.weights) != len(project.criteria):
+            ui.notify("Compute weights before scoring options.")
+            return
     if not project.options:
         ui.notify("Add at least one option to score.")
         return
-    method = get_method(project.method_id)
     option_scores = {
         option: project.scores[idx]
         for idx, option in enumerate(project.options)
     }
-    ranked = method.compute_scores(project.weights, option_scores)
+    try:
+        ranked = method.compute_scores(project.weights, option_scores, context=context)
+    except ModuleNotFoundError as exc:
+        ui.notify(f"Missing dependency: {exc.name}. Install it and retry.")
+        return
     project.results = [Result(option=name, score=score) for name, score in ranked]
     results_view.refresh()
 
@@ -268,7 +366,9 @@ def load_named(name: str) -> None:
     update_method_hints()
     criteria_view.refresh()
     pairwise_view.refresh()
+    promethee_view.refresh()
     weights_view.refresh()
+    weights_action.refresh()
     options_view.refresh()
     results_view.refresh()
     ui.notify(f"Loaded {state.project.name}")
@@ -283,7 +383,7 @@ ui.page_title("Decision Helper")
 
 with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
     ui.label("Decision Helper").classes("text-3xl font-semibold")
-    ui.label("Multi-criteria decision analysis with AHP weighting.").classes("text-gray-500")
+    ui.label("Multi-criteria decision analysis with AHP or PROMETHEE II.").classes("text-gray-500")
 
     with ui.card().classes("w-full"):
         ui.label("Project").classes("text-lg font-semibold")
@@ -295,13 +395,22 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
 
             project_name_input.on_value_change(on_project_name_change)
             ui.button("Save", on_click=save_current)
-            def on_method_change(event) -> None:
-                state.project.method_id = resolve_method_id(event.value, method_options)
-                state.project.consistency_ratio = None
-                update_method_hints()
-                weights_view.refresh()
 
             method_options = list_methods()
+
+            def on_method_change(event) -> None:
+                state.project.method_id = event.value
+                state.project.consistency_ratio = None
+                state.project.weights = []
+                state.project.results = []
+                ensure_state_consistency()
+                update_method_hints()
+                weights_view.refresh()
+                results_view.refresh()
+                weights_action.refresh()
+                pairwise_view.refresh()
+                promethee_view.refresh()
+
             method_select = ui.select(
                 options=method_options,
                 value=state.project.method_id,
@@ -353,56 +462,173 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
 
                 @ui.refreshable
                 def pairwise_view() -> None:
+                    if state.project.method_id != "ahp":
+                        return
                     criteria = state.project.criteria
                     if len(criteria) < 2:
                         ui.label("Add at least two criteria.").classes("text-gray-500")
                         return
-                    with ui.column().classes("gap-2"):
-                        grid_template = f"grid-template-columns: 160px repeat({len(criteria)}, 120px);"
-
-                        with ui.element("div").style(
-                            f"display: grid; {grid_template} align-items: center; gap: 12px;"
-                        ):
-                            ui.label("")
-                            for criterion in criteria:
-                                ui.label(criterion).classes("text-center").style("justify-self: center;")
-
-                        for i, row_name in enumerate(criteria):
+                    grid_template = f"grid-template-columns: 160px repeat({len(criteria)}, 120px);"
+                    min_width = 160 + (len(criteria) * 120)
+                    with ui.element("div").classes("w-full overflow-x-auto").style("max-width: 100%;"):
+                        with ui.column().classes("gap-2"):
                             with ui.element("div").style(
-                                f"display: grid; {grid_template} align-items: center; gap: 12px;"
+                                f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
                             ):
-                                ui.label(row_name)
-                                for j in range(len(criteria)):
-                                    if i == j:
-                                        ui.label("0").classes("text-center").style("justify-self: center;")
-                                    elif i < j:
-                                        value = ui_value_from_ratio(state.project.pairwise[i][j])
-                                        ui.number(
-                                            value=value,
-                                            min=-5,
-                                            max=5,
-                                            step=1,
-                                            format="%d",
-                                            on_change=lambda e, ii=i, jj=j: update_pairwise(ii, jj, e.value),
-                                        ).classes("w-full").props('input-class="text-center" dense')
-                                    else:
-                                        ui_value = ui_value_from_ratio(state.project.pairwise[i][j])
-                                        ui.label(f"{ui_value}").classes("text-center text-gray-500").style("justify-self: center;")
+                                ui.label("")
+                                for criterion in criteria:
+                                    ui.label(criterion).classes("text-center").style("justify-self: center;")
+
+                            for i, row_name in enumerate(criteria):
+                                with ui.element("div").style(
+                                    f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                                ):
+                                    ui.label(row_name)
+                                    for j in range(len(criteria)):
+                                        if i == j:
+                                            ui.label("0").classes("text-center").style("justify-self: center;")
+                                        elif i < j:
+                                            value = ui_value_from_ratio(state.project.pairwise[i][j])
+                                            ui.number(
+                                                value=value,
+                                                min=-5,
+                                                max=5,
+                                                step=1,
+                                                format="%d",
+                                                on_change=lambda e, ii=i, jj=j: update_pairwise(ii, jj, e.value),
+                                            ).classes("w-full").props('input-class="text-center" dense')
+                                        else:
+                                            ui_value = ui_value_from_ratio(state.project.pairwise[i][j])
+                                            ui.label(f"{ui_value}").classes("text-center text-gray-500").style(
+                                                "justify-self: center;"
+                                            )
 
                 pairwise_view()
 
-                ui.button("Compute weights", on_click=compute_weights).classes("mt-2")
+                @ui.refreshable
+                def promethee_view() -> None:
+                    if state.project.method_id != "promethee_ii":
+                        return
+                    criteria = state.project.criteria
+                    if not criteria:
+                        ui.label("Add criteria to configure PROMETHEE II.").classes("text-gray-500")
+                        return
+
+                    grid_template = "grid-template-columns: 160px 190px 110px 200px 90px 90px 90px;"
+                    min_width = 160 + 190 + 110 + 200 + 90 + 90 + 90
+
+                    with ui.element("div").classes("w-full overflow-x-auto").style("max-width: 100%;"):
+                        with ui.element("div").style(
+                            f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                        ):
+                            ui.label("Criterion")
+                            ui.label("Direction")
+                            ui.label("Weight")
+                            ui.label("Preference function")
+                            ui.label("Q")
+                            ui.label("P")
+                            ui.label("S")
+
+                        for idx, criterion in enumerate(criteria):
+                            with ui.element("div").style(
+                                f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                            ):
+                                ui.label(criterion)
+                                ui.select(
+                                    options=PROMETHEE_DIRECTIONS,
+                                    value=state.project.promethee_directions[idx],
+                                    on_change=lambda e, i=idx: update_promethee_direction(i, e.value),
+                                ).classes("w-full")
+                                ui.number(
+                                    value=state.project.promethee_weights[idx],
+                                    min=0,
+                                    step=0.1,
+                                    format="%.2f",
+                                    on_change=lambda e, i=idx: update_promethee_weight(i, e.value),
+                                ).classes("w-full").props('input-class="text-center" dense')
+                                ui.select(
+                                    options=PROMETHEE_FUNCTIONS,
+                                    value=state.project.promethee_functions[idx],
+                                    on_change=lambda e, i=idx: update_promethee_function(i, e.value),
+                                ).classes("w-full")
+                                ui.number(
+                                    value=state.project.promethee_q[idx],
+                                    min=0,
+                                    step=0.1,
+                                    format="%.2f",
+                                    on_change=lambda e, i=idx: update_promethee_threshold("q", i, e.value),
+                                ).classes("w-full").props('input-class="text-center" dense')
+                                ui.number(
+                                    value=state.project.promethee_p[idx],
+                                    min=0,
+                                    step=0.1,
+                                    format="%.2f",
+                                    on_change=lambda e, i=idx: update_promethee_threshold("p", i, e.value),
+                                ).classes("w-full").props('input-class="text-center" dense')
+                                ui.number(
+                                    value=state.project.promethee_s[idx],
+                                    min=0,
+                                    step=0.1,
+                                    format="%.2f",
+                                    on_change=lambda e, i=idx: update_promethee_threshold("s", i, e.value),
+                                ).classes("w-full").props('input-class="text-center" dense')
+
+                    ui.label("Preference function guide:").classes("text-sm text-gray-500 mt-2")
+                    ui.label("Let d be the score difference (after applying Minimize/Maximize).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("Q = indifference threshold, P = preference threshold, S = shape/scale.").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("t1 usual: d <= 0 -> 0, d > 0 -> 1 (no thresholds).").classes("text-sm text-gray-500")
+                    ui.label("t2 U-shape: d <= Q -> 0, d > Q -> 1 (use Q).").classes("text-sm text-gray-500")
+                    ui.label("t3 V-shape: 0..P grows linearly, d >= P -> 1 (use P).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("t4 level: d <= Q -> 0, Q..P -> 0.5, d >= P -> 1 (use Q,P).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("t5 linear: d <= Q -> 0, Q..P linear to 1, d >= P -> 1 (use Q,P).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("t6 Gaussian: smooth curve with S controlling spread (use S > 0).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("t7 quasi: slow start up to S, then full preference (use S > 0).").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("Use non-negative thresholds in the same units as your scores; keep Q <= P.").classes(
+                        "text-sm text-gray-500"
+                    )
+                    ui.label("Weights are normalized automatically when you compute weights or results.").classes(
+                        "text-sm text-gray-500"
+                    )
+
+                promethee_view()
+
+                @ui.refreshable
+                def weights_action() -> None:
+                    label = "Compute weights" if state.project.method_id == "ahp" else "Normalize weights"
+                    ui.button(label, on_click=compute_weights).classes("mt-2")
+
+                weights_action()
 
                 @ui.refreshable
                 def weights_view() -> None:
-                    if not state.project.weights:
+                    if not state.project.criteria:
+                        ui.label("Add criteria to see weights.").classes("text-gray-500")
+                        return
+                    if not state.project.weights or len(state.project.weights) != len(state.project.criteria):
                         ui.label("No weights computed yet.").classes("text-gray-500")
                         return
-                    ui.label("Weights").classes("text-md font-semibold mt-4")
+                    title = "Weights"
+                    if state.project.method_id == "promethee_ii":
+                        title = "Weights (normalized)"
+                    ui.label(title).classes("text-md font-semibold mt-4")
                     with ui.column().classes("gap-2"):
                         for criterion, weight in zip(state.project.criteria, state.project.weights):
                             ui.label(f"{criterion}: {weight:.4f}")
-                    if state.project.consistency_ratio is not None:
+                    if state.project.method_id == "ahp" and state.project.consistency_ratio is not None:
                         cr = state.project.consistency_ratio
                         if math.isnan(cr):
                             ui.label("Consistency ratio: n/a").classes("text-sm text-gray-500")
@@ -412,6 +638,24 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                             ui.label(
                                 f"Warning: CR is above {CONSISTENCY_THRESHOLD:.2f}. Consider revising pairwise judgments."
                             ).classes("text-sm text-negative font-semibold")
+                        discrepancy = max_pairwise_discrepancy(
+                            state.project.criteria,
+                            state.project.pairwise,
+                            state.project.weights,
+                        )
+                        if discrepancy:
+                            _, i, j, actual, expected = discrepancy
+                            actual_ui = ui_value_from_ratio(actual)
+                            expected_ui = ui_value_from_ratio(expected)
+                            ui.label(
+                                "Tip: To improve consistency (lower CR), adjust the largest mismatch."
+                            ).classes("text-sm text-gray-500")
+                            ui.label(
+                                f"Biggest discrepancy: {state.project.criteria[i]} vs {state.project.criteria[j]}."
+                            ).classes("text-sm text-gray-500")
+                            ui.label(
+                                f"You set {actual_ui} (ratio {actual:.3f}); weights imply {expected_ui} (ratio {expected:.3f})."
+                            ).classes("text-sm text-gray-500")
 
                 weights_view()
 
@@ -440,26 +684,48 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                     if not state.project.options:
                         ui.label("No options yet.").classes("text-gray-500")
                         return
-                    ui.label("Scores (higher is better)").classes("text-sm text-gray-500")
-                    with ui.column().classes("gap-2"):
-                        with ui.row().classes("items-center gap-4"):
-                            ui.label("Option").classes("w-32")
-                            for criterion in state.project.criteria:
-                                ui.label(criterion).classes("w-32 text-center")
-                            ui.label("").classes("w-24")
-                        for idx, option in enumerate(state.project.options):
-                            with ui.row().classes("items-center gap-4"):
-                                ui.label(option).classes("w-32")
-                                for j in range(len(state.project.criteria)):
-                                    ui.number(
-                                        value=state.project.scores[idx][j],
-                                        min=1,
-                                        max=10,
-                                        step=1,
-                                        format="%d",
-                                        on_change=lambda e, ii=idx, jj=j: update_score(ii, jj, e.value),
-                                    ).classes("w-32").props('input-class="text-center" dense')
-                                ui.button("Remove", on_click=lambda i=idx: remove_option(i)).props("outline color=negative").classes("w-24")
+                    if state.project.method_id == "promethee_ii":
+                        ui.label("Scores (use natural scale; mark cost criteria as Minimize in PROMETHEE II).").classes(
+                            "text-sm text-gray-500"
+                        )
+                    else:
+                        ui.label("Scores (higher is better)").classes("text-sm text-gray-500")
+                    criteria = state.project.criteria
+                    option_col_width = 220
+                    score_col_width = 140
+                    action_col_width = 110
+                    min_width = option_col_width + (len(criteria) * score_col_width) + action_col_width
+                    grid_template = (
+                        f"grid-template-columns: {option_col_width}px "
+                        f"repeat({len(criteria)}, {score_col_width}px) {action_col_width}px;"
+                    )
+
+                    with ui.element("div").classes("w-full overflow-x-auto").style("max-width: 100%;"):
+                        with ui.column().classes("gap-2"):
+                            with ui.element("div").style(
+                                f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                            ):
+                                ui.label("Option")
+                                for criterion in criteria:
+                                    ui.label(criterion).classes("text-center").style("justify-self: center;")
+                                ui.label("")
+                            for idx, option in enumerate(state.project.options):
+                                with ui.element("div").style(
+                                    f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                                ):
+                                    ui.label(option).classes("break-words pr-2")
+                                    for j in range(len(criteria)):
+                                        ui.number(
+                                            value=state.project.scores[idx][j],
+                                            min=1,
+                                            max=10,
+                                            step=1,
+                                            format="%d",
+                                            on_change=lambda e, ii=idx, jj=j: update_score(ii, jj, e.value),
+                                        ).classes("w-full").props('input-class="text-center" dense')
+                                    ui.button("Remove", on_click=lambda i=idx: remove_option(i)).props(
+                                        "outline color=negative"
+                                    ).classes("w-full")
 
                 options_view()
 
@@ -477,6 +743,8 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                     if not state.project.results:
                         ui.label("No results yet.").classes("text-gray-500")
                         return
+                    if state.project.method_id == "promethee_ii":
+                        ui.label("Net flow (higher is better).").classes("text-sm text-gray-500")
                     with ui.column().classes("gap-2"):
                         for result in state.project.results:
                             ui.label(f"{result.option}: {result.score:.4f}")

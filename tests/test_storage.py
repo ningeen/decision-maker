@@ -16,6 +16,12 @@ class TestStorage(unittest.TestCase):
                 criteria=["Cost"],
                 pairwise=[[1.0]],
                 weights=[1.0],
+                promethee_weights=[0.7],
+                promethee_functions=["t3"],
+                promethee_q=[0.0],
+                promethee_p=[2.0],
+                promethee_s=[0.0],
+                promethee_directions=["min"],
                 options=["Option A"],
                 scores=[[7.5]],
                 results=[Result(option="Option A", score=0.75)],
@@ -30,6 +36,12 @@ class TestStorage(unittest.TestCase):
             self.assertEqual(loaded.name, "Test Project")
             self.assertEqual(loaded.criteria, ["Cost"])
             self.assertEqual(loaded.weights, [1.0])
+            self.assertEqual(loaded.promethee_weights, [0.7])
+            self.assertEqual(loaded.promethee_functions, ["t3"])
+            self.assertEqual(loaded.promethee_q, [0.0])
+            self.assertEqual(loaded.promethee_p, [2.0])
+            self.assertEqual(loaded.promethee_s, [0.0])
+            self.assertEqual(loaded.promethee_directions, ["min"])
             self.assertEqual(loaded.options, ["Option A"])
             self.assertEqual(loaded.scores, [[7.5]])
             self.assertEqual(loaded.results[0].option, "Option A")
