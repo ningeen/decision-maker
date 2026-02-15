@@ -17,8 +17,13 @@ class Project:
     criteria: List[str] = field(default_factory=list)
     pairwise: List[List[float]] = field(default_factory=list)
     weights: List[float] = field(default_factory=list)
+    subcriteria: List[List[str]] = field(default_factory=list)
+    sub_pairwise: List[List[List[float]]] = field(default_factory=list)
+    sub_weights: List[List[float]] = field(default_factory=list)
+    sub_consistency_ratio: List[Optional[float]] = field(default_factory=list)
     consistency_ratio: Optional[float] = None
     promethee_weights: List[float] = field(default_factory=list)
+    sub_promethee_weights: List[List[float]] = field(default_factory=list)
     promethee_functions: List[str] = field(default_factory=list)
     promethee_q: List[float] = field(default_factory=list)
     promethee_p: List[float] = field(default_factory=list)
@@ -28,8 +33,13 @@ class Project:
     bwm_worst_index: Optional[int] = None
     bwm_best_to_others: List[float] = field(default_factory=list)
     bwm_others_to_worst: List[float] = field(default_factory=list)
+    sub_bwm_best_index: List[Optional[int]] = field(default_factory=list)
+    sub_bwm_worst_index: List[Optional[int]] = field(default_factory=list)
+    sub_bwm_best_to_others: List[List[float]] = field(default_factory=list)
+    sub_bwm_others_to_worst: List[List[float]] = field(default_factory=list)
     options: List[str] = field(default_factory=list)
     scores: List[List[float]] = field(default_factory=list)
+    sub_scores: List[List[List[float]]] = field(default_factory=list)
     results: List[Result] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -39,8 +49,13 @@ class Project:
             "criteria": list(self.criteria),
             "pairwise": [list(row) for row in self.pairwise],
             "weights": list(self.weights),
+            "subcriteria": [list(items) for items in self.subcriteria],
+            "sub_pairwise": [[list(row) for row in matrix] for matrix in self.sub_pairwise],
+            "sub_weights": [list(items) for items in self.sub_weights],
+            "sub_consistency_ratio": list(self.sub_consistency_ratio),
             "consistency_ratio": self.consistency_ratio,
             "promethee_weights": list(self.promethee_weights),
+            "sub_promethee_weights": [list(items) for items in self.sub_promethee_weights],
             "promethee_functions": list(self.promethee_functions),
             "promethee_q": list(self.promethee_q),
             "promethee_p": list(self.promethee_p),
@@ -50,8 +65,13 @@ class Project:
             "bwm_worst_index": self.bwm_worst_index,
             "bwm_best_to_others": list(self.bwm_best_to_others),
             "bwm_others_to_worst": list(self.bwm_others_to_worst),
+            "sub_bwm_best_index": list(self.sub_bwm_best_index),
+            "sub_bwm_worst_index": list(self.sub_bwm_worst_index),
+            "sub_bwm_best_to_others": [list(items) for items in self.sub_bwm_best_to_others],
+            "sub_bwm_others_to_worst": [list(items) for items in self.sub_bwm_others_to_worst],
             "options": list(self.options),
             "scores": [list(row) for row in self.scores],
+            "sub_scores": [[list(row) for row in matrix] for matrix in self.sub_scores],
             "results": [result.__dict__ for result in self.results],
         }
 
@@ -64,8 +84,13 @@ class Project:
             criteria=list(data.get("criteria", [])),
             pairwise=[list(row) for row in data.get("pairwise", [])],
             weights=list(data.get("weights", [])),
+            subcriteria=[list(items) for items in data.get("subcriteria", [])],
+            sub_pairwise=[[list(row) for row in matrix] for matrix in data.get("sub_pairwise", [])],
+            sub_weights=[list(items) for items in data.get("sub_weights", [])],
+            sub_consistency_ratio=list(data.get("sub_consistency_ratio", [])),
             consistency_ratio=data.get("consistency_ratio"),
             promethee_weights=list(data.get("promethee_weights", [])),
+            sub_promethee_weights=[list(items) for items in data.get("sub_promethee_weights", [])],
             promethee_functions=list(data.get("promethee_functions", [])),
             promethee_q=list(data.get("promethee_q", [])),
             promethee_p=list(data.get("promethee_p", [])),
@@ -75,7 +100,12 @@ class Project:
             bwm_worst_index=data.get("bwm_worst_index"),
             bwm_best_to_others=list(data.get("bwm_best_to_others", [])),
             bwm_others_to_worst=list(data.get("bwm_others_to_worst", [])),
+            sub_bwm_best_index=list(data.get("sub_bwm_best_index", [])),
+            sub_bwm_worst_index=list(data.get("sub_bwm_worst_index", [])),
+            sub_bwm_best_to_others=[list(items) for items in data.get("sub_bwm_best_to_others", [])],
+            sub_bwm_others_to_worst=[list(items) for items in data.get("sub_bwm_others_to_worst", [])],
             options=list(data.get("options", [])),
             scores=[list(row) for row in data.get("scores", [])],
+            sub_scores=[[list(row) for row in matrix] for matrix in data.get("sub_scores", [])],
             results=results,
         )

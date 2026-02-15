@@ -26,7 +26,8 @@ class AHPMethod(MCDAMethod):
             from pydecision.algorithm import ahp_method
 
         matrix = np.array(pairwise, dtype=float)
-        weights, rc = ahp_method(matrix, wd="geometric")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            weights, rc = ahp_method(matrix, wd="geometric")
         return MethodResult(weights=weights.tolist(), consistency_ratio=float(rc))
 
     def compute_scores(
