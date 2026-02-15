@@ -24,6 +24,10 @@ class Project:
     promethee_p: List[float] = field(default_factory=list)
     promethee_s: List[float] = field(default_factory=list)
     promethee_directions: List[str] = field(default_factory=list)
+    bwm_best_index: Optional[int] = None
+    bwm_worst_index: Optional[int] = None
+    bwm_best_to_others: List[float] = field(default_factory=list)
+    bwm_others_to_worst: List[float] = field(default_factory=list)
     options: List[str] = field(default_factory=list)
     scores: List[List[float]] = field(default_factory=list)
     results: List[Result] = field(default_factory=list)
@@ -42,6 +46,10 @@ class Project:
             "promethee_p": list(self.promethee_p),
             "promethee_s": list(self.promethee_s),
             "promethee_directions": list(self.promethee_directions),
+            "bwm_best_index": self.bwm_best_index,
+            "bwm_worst_index": self.bwm_worst_index,
+            "bwm_best_to_others": list(self.bwm_best_to_others),
+            "bwm_others_to_worst": list(self.bwm_others_to_worst),
             "options": list(self.options),
             "scores": [list(row) for row in self.scores],
             "results": [result.__dict__ for result in self.results],
@@ -63,6 +71,10 @@ class Project:
             promethee_p=list(data.get("promethee_p", [])),
             promethee_s=list(data.get("promethee_s", [])),
             promethee_directions=list(data.get("promethee_directions", [])),
+            bwm_best_index=data.get("bwm_best_index"),
+            bwm_worst_index=data.get("bwm_worst_index"),
+            bwm_best_to_others=list(data.get("bwm_best_to_others", [])),
+            bwm_others_to_worst=list(data.get("bwm_others_to_worst", [])),
             options=list(data.get("options", [])),
             scores=[list(row) for row in data.get("scores", [])],
             results=results,

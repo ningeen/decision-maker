@@ -1,9 +1,11 @@
 from mcda.core import MCDAMethod, MethodResult
 from mcda.methods.ahp import AHPMethod
+from mcda.methods.bwm import BWMMethod
 from mcda.methods.promethee_ii import PrometheeIIMethod
 
 METHODS = {
     "ahp": AHPMethod(),
+    "bwm": BWMMethod(),
     "promethee_ii": PrometheeIIMethod(),
 }
 

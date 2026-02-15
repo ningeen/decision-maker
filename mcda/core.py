@@ -20,6 +20,10 @@ class MethodContext:
     p: List[float] = field(default_factory=list)
     s: List[float] = field(default_factory=list)
     weights_raw: List[float] = field(default_factory=list)
+    best_index: int | None = None
+    worst_index: int | None = None
+    best_to_others: List[float] = field(default_factory=list)
+    others_to_worst: List[float] = field(default_factory=list)
 
 
 class MCDAMethod(ABC):

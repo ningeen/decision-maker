@@ -72,6 +72,32 @@ def resize_list(values: List, size: int, default) -> List:
     return resized
 
 
+def ensure_bwm_state() -> None:
+    project = state.project
+    n_items = len(project.criteria)
+    if n_items == 0:
+        project.bwm_best_index = None
+        project.bwm_worst_index = None
+        project.bwm_best_to_others = []
+        project.bwm_others_to_worst = []
+        return
+
+    project.bwm_best_to_others = resize_list(project.bwm_best_to_others, n_items, 1.0)
+    project.bwm_others_to_worst = resize_list(project.bwm_others_to_worst, n_items, 1.0)
+
+    if project.bwm_best_index is None or not (0 <= project.bwm_best_index < n_items):
+        project.bwm_best_index = 0
+    if project.bwm_worst_index is None or not (0 <= project.bwm_worst_index < n_items):
+        project.bwm_worst_index = n_items - 1 if n_items > 1 else 0
+    if n_items > 1 and project.bwm_best_index == project.bwm_worst_index:
+        project.bwm_worst_index = n_items - 1 if project.bwm_best_index != n_items - 1 else 0
+
+    project.bwm_best_to_others = [max(1.0, float(value)) for value in project.bwm_best_to_others]
+    project.bwm_others_to_worst = [max(1.0, float(value)) for value in project.bwm_others_to_worst]
+    project.bwm_best_to_others[project.bwm_best_index] = 1.0
+    project.bwm_others_to_worst[project.bwm_worst_index] = 1.0
+
+
 UI_SCALE_TO_SAATY = {
     1: 2.0,
     2: 3.0,
@@ -150,6 +176,7 @@ def ensure_state_consistency() -> None:
     project.promethee_p = resize_list(project.promethee_p, len(project.criteria), 0.0)
     project.promethee_s = resize_list(project.promethee_s, len(project.criteria), 0.0)
     project.promethee_directions = resize_list(project.promethee_directions, len(project.criteria), "max")
+    ensure_bwm_state()
     project.scores = resize_scores(project.scores, len(project.options), len(project.criteria))
 
 
@@ -165,6 +192,7 @@ def add_criterion(name: str) -> None:
     ensure_state_consistency()
     criteria_view.refresh()
     pairwise_view.refresh()
+    bwm_view.refresh()
     promethee_view.refresh()
     weights_view.refresh()
     options_view.refresh()
@@ -176,6 +204,7 @@ def remove_criterion(index: int) -> None:
     ensure_state_consistency()
     criteria_view.refresh()
     pairwise_view.refresh()
+    bwm_view.refresh()
     promethee_view.refresh()
     weights_view.refresh()
     options_view.refresh()
@@ -195,14 +224,58 @@ def update_pairwise(i: int, j: int, value: float | None) -> None:
     pairwise_view.refresh()
 
 
+def update_bwm_best(value: str | None) -> None:
+    if not value:
+        return
+    criteria = state.project.criteria
+    if value not in criteria:
+        return
+    state.project.bwm_best_index = criteria.index(value)
+    ensure_state_consistency()
+    bwm_view.refresh()
+
+
+def update_bwm_worst(value: str | None) -> None:
+    if not value:
+        return
+    criteria = state.project.criteria
+    if value not in criteria:
+        return
+    state.project.bwm_worst_index = criteria.index(value)
+    ensure_state_consistency()
+    bwm_view.refresh()
+
+
+def update_bwm_best_to_others(index: int, value: float | None) -> None:
+    if value is None:
+        return
+    if value < 1 or value > 9:
+        ui.notify("BWM values must be between 1 and 9.")
+        return
+    state.project.bwm_best_to_others[index] = float(value)
+
+
+def update_bwm_others_to_worst(index: int, value: float | None) -> None:
+    if value is None:
+        return
+    if value < 1 or value > 9:
+        ui.notify("BWM values must be between 1 and 9.")
+        return
+    state.project.bwm_others_to_worst[index] = float(value)
+
+
 def compute_weights() -> None:
     project = state.project
     if not project.criteria:
         ui.notify("Add at least one criterion to compute weights.")
         return
-    if project.method_id == "ahp" and len(project.criteria) < 2:
-        ui.notify("Add at least two criteria to compute AHP weights.")
+    if project.method_id in ("ahp", "bwm") and len(project.criteria) < 2:
+        ui.notify("Add at least two criteria to compute weights.")
         return
+    if project.method_id == "bwm":
+        if project.bwm_best_index is None or project.bwm_worst_index is None:
+            ui.notify("Select best and worst criteria before computing weights.")
+            return
     method = get_method(project.method_id)
     try:
         context = build_context()
@@ -227,6 +300,14 @@ def update_method_hints() -> None:
         method_hint_secondary.set_text(
             "Scores are used directly; choose Minimize for cost criteria."
         )
+    elif state.project.method_id == "bwm":
+        method_heading.set_text("Best-Worst comparisons")
+        method_hint_primary.set_text(
+            "Pick the best and worst criteria, then rate best vs others and others vs worst (1-9)."
+        )
+        method_hint_secondary.set_text(
+            "1 means equal importance; higher numbers mean stronger preference."
+        )
     else:
         method_heading.set_text("Pairwise comparison (upper triangle)")
         method_hint_primary.set_text(
@@ -247,6 +328,10 @@ def build_context() -> MethodContext:
         p=list(project.promethee_p),
         s=list(project.promethee_s),
         weights_raw=list(project.promethee_weights),
+        best_index=project.bwm_best_index,
+        worst_index=project.bwm_worst_index,
+        best_to_others=list(project.bwm_best_to_others),
+        others_to_worst=list(project.bwm_others_to_worst),
     )
 
 
@@ -383,7 +468,9 @@ ui.page_title("Decision Helper")
 
 with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
     ui.label("Decision Helper").classes("text-3xl font-semibold")
-    ui.label("Multi-criteria decision analysis with AHP or PROMETHEE II.").classes("text-gray-500")
+    ui.label("Multi-criteria decision analysis with AHP, Best-Worst, or PROMETHEE II.").classes(
+        "text-gray-500"
+    )
 
     with ui.card().classes("w-full"):
         ui.label("Project").classes("text-lg font-semibold")
@@ -409,6 +496,7 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                 results_view.refresh()
                 weights_action.refresh()
                 pairwise_view.refresh()
+                bwm_view.refresh()
                 promethee_view.refresh()
 
             method_select = ui.select(
@@ -504,6 +592,84 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                                             )
 
                 pairwise_view()
+
+                @ui.refreshable
+                def bwm_view() -> None:
+                    if state.project.method_id != "bwm":
+                        return
+                    criteria = state.project.criteria
+                    if len(criteria) < 2:
+                        ui.label("Add at least two criteria.").classes("text-gray-500")
+                        return
+                    best_idx = (
+                        state.project.bwm_best_index
+                        if state.project.bwm_best_index is not None
+                        else 0
+                    )
+                    worst_idx = (
+                        state.project.bwm_worst_index
+                        if state.project.bwm_worst_index is not None
+                        else (len(criteria) - 1)
+                    )
+
+                    with ui.row().classes("items-center gap-4"):
+                        ui.select(
+                            options=criteria,
+                            value=criteria[best_idx],
+                            label="Best criterion",
+                            on_change=lambda e: update_bwm_best(e.value),
+                        ).classes("w-64")
+                        ui.select(
+                            options=criteria,
+                            value=criteria[worst_idx],
+                            label="Worst criterion",
+                            on_change=lambda e: update_bwm_worst(e.value),
+                        ).classes("w-64")
+
+                    grid_template = "grid-template-columns: 160px 200px 200px;"
+                    min_width = 160 + 200 + 200
+
+                    with ui.element("div").classes("w-full overflow-x-auto").style("max-width: 100%;"):
+                        with ui.element("div").style(
+                            f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                        ):
+                            ui.label("Criterion")
+                            ui.label("Best vs criterion")
+                            ui.label("Criterion vs worst")
+
+                        for idx, criterion in enumerate(criteria):
+                            with ui.element("div").style(
+                                f"display: grid; {grid_template} align-items: center; gap: 12px; min-width: {min_width}px;"
+                            ):
+                                ui.label(criterion)
+                                if idx == best_idx:
+                                    ui.label("1").classes("text-center text-gray-500").style("justify-self: center;")
+                                else:
+                                    ui.number(
+                                        value=state.project.bwm_best_to_others[idx],
+                                        min=1,
+                                        max=9,
+                                        step=1,
+                                        format="%d",
+                                        on_change=lambda e, i=idx: update_bwm_best_to_others(i, e.value),
+                                    ).classes("w-full").props('input-class="text-center" dense')
+                                if idx == worst_idx:
+                                    ui.label("1").classes("text-center text-gray-500").style("justify-self: center;")
+                                else:
+                                    ui.number(
+                                        value=state.project.bwm_others_to_worst[idx],
+                                        min=1,
+                                        max=9,
+                                        step=1,
+                                        format="%d",
+                                        on_change=lambda e, i=idx: update_bwm_others_to_worst(i, e.value),
+                                    ).classes("w-full").props('input-class="text-center" dense')
+
+                    ui.label("Use the 1-9 scale (1 = equal importance, 9 = extremely more important).").classes(
+                        "text-sm text-gray-500 mt-2"
+                    )
+
+                bwm_view()
 
                 @ui.refreshable
                 def promethee_view() -> None:
@@ -608,7 +774,11 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
 
                 @ui.refreshable
                 def weights_action() -> None:
-                    label = "Compute weights" if state.project.method_id == "ahp" else "Normalize weights"
+                    label = (
+                        "Normalize weights"
+                        if state.project.method_id == "promethee_ii"
+                        else "Compute weights"
+                    )
                     ui.button(label, on_click=compute_weights).classes("mt-2")
 
                 weights_action()
@@ -656,6 +826,10 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                             ui.label(
                                 f"You set {actual_ui} (ratio {actual:.3f}); weights imply {expected_ui} (ratio {expected:.3f})."
                             ).classes("text-sm text-gray-500")
+                    if state.project.method_id == "bwm" and state.project.consistency_ratio is not None:
+                        xi = state.project.consistency_ratio
+                        ui.label(f"Max deviation (xi): {xi:.4f}").classes("text-sm text-gray-500")
+                        ui.label("Lower is better; 0 means fully consistent.").classes("text-sm text-gray-500")
 
                 weights_view()
 

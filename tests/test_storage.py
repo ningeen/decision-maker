@@ -22,6 +22,10 @@ class TestStorage(unittest.TestCase):
                 promethee_p=[2.0],
                 promethee_s=[0.0],
                 promethee_directions=["min"],
+                bwm_best_index=0,
+                bwm_worst_index=0,
+                bwm_best_to_others=[1.0],
+                bwm_others_to_worst=[1.0],
                 options=["Option A"],
                 scores=[[7.5]],
                 results=[Result(option="Option A", score=0.75)],
@@ -42,6 +46,10 @@ class TestStorage(unittest.TestCase):
             self.assertEqual(loaded.promethee_p, [2.0])
             self.assertEqual(loaded.promethee_s, [0.0])
             self.assertEqual(loaded.promethee_directions, ["min"])
+            self.assertEqual(loaded.bwm_best_index, 0)
+            self.assertEqual(loaded.bwm_worst_index, 0)
+            self.assertEqual(loaded.bwm_best_to_others, [1.0])
+            self.assertEqual(loaded.bwm_others_to_worst, [1.0])
             self.assertEqual(loaded.options, ["Option A"])
             self.assertEqual(loaded.scores, [[7.5]])
             self.assertEqual(loaded.results[0].option, "Option A")
