@@ -621,6 +621,118 @@ def build_context() -> MethodContext:
     )
 
 
+def get_aggregated_option_scores() -> dict[str, List[float]]:
+    project = state.project
+    return aggregate_option_scores(
+        project.options,
+        project.criteria,
+        project.scores,
+        project.subcriteria,
+        project.sub_scores,
+        project.sub_weights,
+    )
+
+
+def normalize_scores_matrix(
+    values: List[List[float]],
+    directions: List[str] | None = None,
+) -> List[List[float]]:
+    if not values:
+        return []
+    n_rows = len(values)
+    n_cols = len(values[0]) if values[0] else 0
+    normalized = [[0.0 for _ in range(n_cols)] for _ in range(n_rows)]
+    for col in range(n_cols):
+        column_values = [row[col] for row in values]
+        min_val = min(column_values)
+        max_val = max(column_values)
+        span = max_val - min_val
+        if span == 0:
+            for row in range(n_rows):
+                normalized[row][col] = 1.0
+            continue
+        is_min = bool(directions and col < len(directions) and directions[col] == "min")
+        if is_min:
+            for row in range(n_rows):
+                normalized[row][col] = (max_val - values[row][col]) / span
+        else:
+            for row in range(n_rows):
+                normalized[row][col] = (values[row][col] - min_val) / span
+    return normalized
+
+
+def weighted_contributions(
+    option_scores: dict[str, List[float]],
+    weights: List[float],
+    directions: List[str] | None = None,
+) -> tuple[List[str], List[List[float]]] | None:
+    if not option_scores:
+        return None
+    options = list(option_scores.keys())
+    rows = [option_scores[option] for option in options]
+    if not rows or not rows[0]:
+        return None
+    n_cols = len(rows[0])
+    if len(weights) != n_cols:
+        return None
+    normalized = normalize_scores_matrix(rows, directions)
+    contributions = [
+        [normalized[row][col] * weights[col] for col in range(n_cols)]
+        for row in range(len(rows))
+    ]
+    return options, contributions
+
+
+def build_reduced_context(remove_index: int) -> MethodContext:
+    project = state.project
+    def _drop(values: List):
+        return [value for idx, value in enumerate(values) if idx != remove_index]
+
+    return MethodContext(
+        criteria=_drop(project.criteria),
+        directions=_drop(project.promethee_directions),
+        preference_functions=_drop(project.promethee_functions),
+        q=_drop(project.promethee_q),
+        p=_drop(project.promethee_p),
+        s=_drop(project.promethee_s),
+    )
+
+
+def compute_ranking_without_criterion(remove_index: int) -> List[tuple[str, float]] | None:
+    project = state.project
+    if len(project.criteria) <= 1:
+        return None
+    if remove_index < 0 or remove_index >= len(project.criteria):
+        return None
+    option_scores = get_aggregated_option_scores()
+    if not option_scores:
+        return None
+    reduced_scores: dict[str, List[float]] = {}
+    for option in project.options:
+        scores_row = option_scores.get(option, [])
+        reduced_scores[option] = [
+            value for idx, value in enumerate(scores_row) if idx != remove_index
+        ]
+    reduced_weights = [
+        weight for idx, weight in enumerate(project.weights) if idx != remove_index
+    ]
+    if not reduced_weights:
+        return None
+    total = sum(reduced_weights)
+    if total > 0:
+        reduced_weights = [weight / total for weight in reduced_weights]
+    else:
+        reduced_weights = [1.0 / len(reduced_weights)] * len(reduced_weights)
+
+    method = get_method(project.method_id)
+    context = (
+        build_reduced_context(remove_index)
+        if project.method_id == "promethee_ii"
+        else None
+    )
+    return method.compute_scores(reduced_weights, reduced_scores, context=context)
+
+
 def add_option(name: str) -> None:
     name = name.strip()
     if not name:
@@ -729,14 +841,7 @@ def recompute_results() -> None:
     try:
         compute_subcriteria_weights()
         weights_view.refresh()
-        option_scores = aggregate_option_scores(
-            project.options,
-            project.criteria,
-            project.scores,
-            project.subcriteria,
-            project.sub_scores,
-            project.sub_weights,
-        )
+        option_scores = get_aggregated_option_scores()
         ranked = method.compute_scores(project.weights, option_scores, context=context)
     except ModuleNotFoundError as exc:
         ui.notify(f"Missing dependency: {exc.name}. Install it and retry.")
@@ -1492,6 +1597,68 @@ with ui.column().classes("w-full max-w-6xl mx-auto p-6"):
                     with ui.column().classes("gap-2"):
                         for result in state.project.results:
                             ui.label(f"{result.option}: {result.score:.4f}")
+                    try:
+                        from matplotlib import pyplot as plt
+                    except ModuleNotFoundError:
+                        return
+                    labels = [result.option for result in state.project.results]
+                    values = [result.score for result in state.project.results]
+                    with ui.pyplot(figsize=(6.5, 3.5)):
+                        plt.bar(labels, values, color="#2563eb")
+                        plt.ylabel("Score")
+                        plt.title("Results overview")
+                        plt.xticks(rotation=25, ha="right")
+                        plt.tight_layout()
+                    if state.project.weights and len(state.project.weights) == len(state.project.criteria):
+                        ui.label("Weights overview").classes("text-md font-semibold mt-4")
+                        with ui.pyplot(figsize=(6.5, 3.2)):
+                            plt.bar(state.project.criteria, state.project.weights, color="#16a34a")
+                            plt.ylabel("Weight")
+                            plt.title("Criteria weights")
+                            plt.xticks(rotation=25, ha="right")
+                            plt.tight_layout()
+
+                    option_scores = get_aggregated_option_scores()
+                    contributions = weighted_contributions(
+                        option_scores,
+                        list(state.project.weights),
+                        list(state.project.promethee_directions)
+                        if state.project.method_id == "promethee_ii"
+                        else None,
+                    )
+                    if contributions:
+                        winner = state.project.results[0].option
+                        ui.label(f"Why {winner} wins").classes("text-md font-semibold mt-4")
+                        if state.project.method_id == "promethee_ii":
+                            ui.label(
+                                "Heatmap shows illustrative weighted contributions (min/max directions applied)."
+                            ).classes("text-sm text-gray-500")
+                        options, matrix = contributions
+                        with ui.pyplot(figsize=(7.2, 3.8)):
+                            plt.imshow(matrix, aspect="auto", cmap="YlGnBu")
+                            plt.xticks(
+                                range(len(state.project.criteria)),
+                                state.project.criteria,
+                                rotation=30,
+                                ha="right",
+                            )
+                            plt.yticks(range(len(options)), options)
+                            plt.colorbar(label="Weighted contribution")
+                            plt.title("Weighted contributions heatmap")
+                            plt.tight_layout()
+
+                    ui.label("What-if: remove one criterion").classes("text-md font-semibold mt-4")
+                    if len(state.project.criteria) < 2:
+                        ui.label("Add at least two criteria to see what-if rankings.").classes("text-sm text-gray-500")
+                    else:
+                        for idx, criterion in enumerate(state.project.criteria):
+                            ranking = compute_ranking_without_criterion(idx)
+                            with ui.expansion(f"Without {criterion}"):
+                                if not ranking:
+                                    ui.label("No ranking available.").classes("text-sm text-gray-500")
+                                    continue
+                                for name, score in ranking:
+                                    ui.label(f"{name}: {score:.4f}")
 
                 results_view()
 
